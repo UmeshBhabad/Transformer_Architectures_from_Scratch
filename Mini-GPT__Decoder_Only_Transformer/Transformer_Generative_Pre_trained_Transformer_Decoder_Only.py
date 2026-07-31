@@ -169,3 +169,285 @@ print(sample_embedding_output.shape)
 
 print("\nSample Embedding Vector of First Word:")
 print(sample_embedding_output[0][0].numpy())
+
+
+# ============================================================
+# Step 5: Decoder-Only Transformer Block
+# ============================================================
+
+Header(5, "Decoder-Only Transformer Block")
+
+print("""
+This block uses Masked Self-Attention.
+
+Masked Self-Attention means:
+Current word can see only previous words.
+It cannot see future words.
+""")
+
+class DecoderOnlyTransformerBlock(layers.Layer):
+    def __init__(self, embed_dim, num_heads, ff_dim):
+        super().__init__()
+
+        self.masked_attention = layers.MultiHeadAttention(
+            num_heads=num_heads,
+            key_dim=embed_dim
+        )
+
+        self.feed_forward = tf.keras.Sequential([
+            layers.Dense(ff_dim, activation="relu"),
+            layers.Dense(embed_dim)
+        ])
+
+        self.layernorm1 = layers.LayerNormalization()
+        self.layernorm2 = layers.LayerNormalization()
+
+        self.dropout1 = layers.Dropout(0.1)
+        self.dropout2 = layers.Dropout(0.1)
+
+    def get_causal_attention_mask(self, inputs):
+        batch_size = tf.shape(inputs)[0]
+        seq_len = tf.shape(inputs)[1]
+
+        i = tf.range(seq_len)[:, None]
+        j = tf.range(seq_len)
+
+        mask = tf.cast(i >= j, dtype="int32")
+        mask = tf.reshape(mask, (1, seq_len, seq_len))
+
+        mult = tf.concat(
+            [tf.expand_dims(batch_size, -1),
+             tf.constant([1, 1], dtype=tf.int32)],
+            axis=0
+        )
+
+        return tf.tile(mask, mult)
+
+    def call(self, inputs, training=False):
+        causal_mask = self.get_causal_attention_mask(inputs)
+
+        attention_output = self.masked_attention(
+            query=inputs,
+            key=inputs,
+            value=inputs,
+            attention_mask=causal_mask
+        )
+
+        attention_output = self.dropout1(attention_output, training=training)
+
+        out1 = self.layernorm1(inputs + attention_output)
+
+        ffn_output = self.feed_forward(out1)
+
+        ffn_output = self.dropout2(ffn_output, training=training)
+
+        return self.layernorm2(out1 + ffn_output)
+
+
+# ============================================================
+# Step 6: Demonstrate Mask Matrix
+# ============================================================
+
+Header(6, "Causal Mask Demonstration")
+
+print("This mask prevents model from seeing future words.")
+
+dummy_block = DecoderOnlyTransformerBlock(
+    embed_dim=32,
+    num_heads=2,
+    ff_dim=64
+)
+
+dummy_input = tf.random.normal((1, sequence_length, embed_dim))
+
+mask = dummy_block.get_causal_attention_mask(dummy_input)
+
+print("\nCausal Mask:")
+print(mask[0].numpy())
+
+print("""
+In this matrix:
+1 means visible
+0 means hidden
+
+For example:
+Word at position 0 can see only position 0.
+Word at position 1 can see position 0 and 1.
+Word at position 2 can see position 0, 1 and 2.
+""")
+
+
+# ============================================================
+# Step 7: Model Building
+# ============================================================
+
+Header(7, "Model Building")
+
+print("""
+Building Mini GPT using:
+1. Token + Positional Embedding
+2. Decoder-only Transformer Block
+3. Dense layer with Softmax
+""")
+
+num_heads = 2
+ff_dim = 64
+
+inputs = layers.Input(shape=(sequence_length,), dtype=tf.int64)
+
+x = TokenAndPositionEmbedding(
+    sequence_length,
+    vocab_size,
+    embed_dim
+)(inputs)
+
+x = DecoderOnlyTransformerBlock(
+    embed_dim,
+    num_heads,
+    ff_dim
+)(x)
+
+x = DecoderOnlyTransformerBlock(
+    embed_dim,
+    num_heads,
+    ff_dim
+)(x)
+
+outputs = layers.Dense(vocab_size, activation="softmax")(x)
+
+model = tf.keras.Model(inputs, outputs)
+
+model.compile(
+    optimizer="adam",
+    loss="sparse_categorical_crossentropy",
+    metrics=["accuracy"]
+)
+
+model.summary()
+
+
+# ============================================================
+# Step 8: Model Training
+# ============================================================
+
+Header(8, "Model Training")
+
+print("""
+Model learns to predict next word at every position.
+""")
+
+y_data = np.expand_dims(y_data, -1)
+
+history = model.fit(
+    x_data,
+    y_data,
+    epochs=300,
+    batch_size=2,
+    verbose=1
+)
+
+
+# ============================================================
+# Step 9: Reverse Vocabulary
+# ============================================================
+
+Header(9, "Reverse Vocabulary Creation")
+
+print("Creating index-to-word dictionary for prediction.")
+
+index_to_word = dict(enumerate(vocabulary))
+word_to_index = {word: index for index, word in enumerate(vocabulary)}
+
+for i in range(min(25, len(vocabulary))):
+    print(i, ":", index_to_word[i])
+
+
+# ============================================================
+# Step 10: Next Word Prediction Function
+# ============================================================
+
+Header(10, "Next Word Prediction Function")
+
+print("""
+Given a partial sentence, model predicts the next word.
+""")
+
+def predict_next_word(input_text):
+    tokenized_input = vectorizer([input_text])[:, :-1]
+
+    prediction = model.predict(tokenized_input, verbose=0)
+
+    input_words = input_text.split()
+    position = len(input_words) - 1
+
+    if position < 0:
+        position = 0
+
+    if position >= sequence_length:
+        position = sequence_length - 1
+
+    predicted_token_index = np.argmax(prediction[0, position, :])
+
+    predicted_word = index_to_word.get(predicted_token_index, "")
+
+    return predicted_word
+
+
+test_inputs = [
+    "i love",
+    "machine learning is",
+    "deep learning is",
+    "gpt is",
+    "language model predicts",
+    "masked attention prevents"
+]
+
+for text in test_inputs:
+    predicted_word = predict_next_word(text)
+
+    print("-" * 60)
+    print("Input Text      :", text)
+    print("Predicted Word  :", predicted_word)
+
+
+# ============================================================
+# Step 11: Text Generation Function
+# ============================================================
+
+Header(11, "Autoregressive Text Generation")
+
+print("""
+The model predicts one word.
+Then that word is added to input.
+Then next word is predicted.
+This is called autoregressive generation.
+""")
+
+def generate_text(start_text, number_of_words=5):
+    generated_text = start_text
+
+    for i in range(number_of_words):
+        next_word = predict_next_word(generated_text)
+
+        if next_word == "" or next_word == "[UNK]":
+            break
+
+        generated_text = generated_text + " " + next_word
+
+    return generated_text
+
+
+generation_inputs = [
+    "i love",
+    "machine learning",
+    "decoder transformer",
+    "gpt",
+    "students learn"
+]
+
+for text in generation_inputs:
+    output = generate_text(text, number_of_words=4)
+
+    print("-" * 60)
+    print("Start Text     :", text)
+    print("Generated Text :", output)
